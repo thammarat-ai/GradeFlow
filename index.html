@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GradeFlow CS - ระบบตรวจสอบจบและจำลองเกรด</title>
+    <!-- Tailwind CSS, Vue.js, and html2pdf.js -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <!-- Google Font: Kanit -->
+    <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: 'Kanit', sans-serif; background-color: #f8fafc; font-size: 16px; }
+        [v-cloak] { display: none; }
+        .sticky-sidebar { position: sticky; top: 5rem; }
+        .animate-fadeIn { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        
+        .kpi-value { font-size: 2.25rem; font-weight: 700; letter-spacing: 0; line-height: 1.2; }
+        .sidebar-gpax { font-size: 4rem; font-weight: 700; letter-spacing: 0; line-height: 1; }
+        
+        /* สไตล์สำหรับ PDF Export - จัดวางนอกจอแต่เปิดให้ Library เห็น */
+        #pdf-export-container {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 210mm;
+            height: 297mm;
+            z-index: -9999;
+            opacity: 0;
+            pointer-events: none;
+            background-color: white;
+        }
+        
+        @media print {
+            .no-print { display: none !important; }
+        }
+    </style>
+</head>
+<body>
+    <div id="app" v-cloak class="min-h-screen pb-20">
+        
+        <!-- PDF Info Modal -->
+        <div v-if="showPdfModal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm no-print">
+            <div class="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-md p-10 animate-fadeIn">
+                <h3 class="text-2xl font-black text-slate-800 mb-6 flex items-center gap-3">
+                    <i class="fas fa-user-edit text-blue-600"></i> ข้อมูลนิสิต
+                </h3>
+                <div class="space-y-5">
+                    <div>
+                        <label class="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">รหัสนิสิต</label>
+                        <input v-model="studentInfo.id" type="text" maxlength="8" placeholder="66XXXXXX" class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 font-bold text-slate-700 focus:ring-4 focus:ring-blue-100 focus:outline-none transition-all">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">ชื่อ-นามสกุล</label>
+                        <input v-model="studentInfo.name" type="text" placeholder="นาย/นางสาว สมชาย ใจดี" class="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 font-bold text-slate-700 focus:ring-4 focus:ring-blue-100 focus:outline-none transition-all">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4 mt-10">
+                    <button @click="showPdfModal = false" class="py-3.5 rounded-2xl font-black text-sm uppercase tracking-widest text-slate-400 hover:bg-slate-50 transition-all">ยกเลิก</button>
+                    <button @click="generatePDF" :disabled="studentInfo.id.length !== 8" :class="studentInfo.id.length !== 8 ? 'opacity-50 cursor-not-allowed bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'" class="text-white py-3.5 rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-lg shadow-blue-200">สร้าง PDF</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Off-screen PDF Template -->
+        <div id="pdf-export-container">
+            <div id="pdf-template" class="p-12 text-slate-800 bg-white flex flex-col" style="width: 210mm; height: 297mm; overflow: hidden;">
+                <!-- PDF Header -->
+                <div class="flex justify-between items-end border-b-2 border-blue-600 pb-6 mb-8 flex-shrink-0">
+                    <div>
+                        <h1 class="text-3xl font-black mb-1 uppercase tracking-tighter text-slate-900">GradeFlow <span class="text-blue-600">CS</span></h1>
+                        <p class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Graduation Progress Summary Report</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-lg font-black text-slate-800 leading-none mb-1">{{ studentInfo.name || 'ไม่ระบุชื่อ' }}</p>
+                        <p class="text-xs font-bold text-slate-400 italic font-mono">Student ID: {{ studentInfo.id || 'ไม่ระบุรหัส' }}</p>
+                    </div>
+                </div>
+
+                <!-- KPI Summary Grid -->
+                <div class="grid grid-cols-3 gap-6 mb-8 flex-shrink-0">
+                    <div class="bg-slate-50 p-6 rounded-3xl border border-slate-100 text-center">
+                        <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Passed Credits</p>
+                        <p class="text-3xl font-black text-slate-800">{{ totalCreditsPassed }} <span class="text-base text-slate-400">/ {{ minCredits }}</span></p>
+                    </div>
+                    <div class="bg-slate-900 p-6 rounded-3xl text-white text-center">
+                        <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Current GPAX</p>
+                        <p class="text-3xl font-bold text-blue-400">{{ gpax.toFixed(2) }}</p>
+                    </div>
+                    <div class="bg-slate-50 p-6 rounded-3xl border border-slate-100 text-center flex flex-col justify-center">
+                        <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">English Test</p>
+                        <p :class="englishPassed ? 'text-green-600' : 'text-amber-500'" class="text-base font-black uppercase italic tracking-wider">{{ englishPassed ? 'Passed' : 'In Progress' }}</p>
+                    </div>
+                </div>
+
+                <!-- Detailed Category List -->
+                <div class="flex-grow space-y-1">
+                    <h3 class="text-xs font-black uppercase italic text-blue-600 tracking-[0.15em] mb-4 flex items-center gap-2">
+                        <i class="fas fa-list-ul"></i> Curriculum Breakdown
+                    </h3>
+                    <div v-for="cat in categories" class="flex items-center justify-between py-3 border-b border-slate-50 px-2">
+                        <div class="flex flex-col">
+                            <span class="text-[13px] font-bold text-slate-700 leading-tight">{{ cat.name }}</span>
+                            <div class="flex gap-4 mt-1">
+                                <span v-if="cat.calculateGpa" class="text-[9px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full uppercase">GPA: {{ calculateCategoryGpa(cat).toFixed(2) }}</span>
+                                <span class="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">{{ getCategoryStatus(cat).credits }} / {{ cat.minCredits }} Credits Earned</span>
+                            </div>
+                        </div>
+                        <div class="text-right flex-shrink-0">
+                            <span :class="getCategoryStatus(cat).isPass ? 'text-green-600 bg-green-50' : 'text-red-500 bg-red-50'" class="text-[10px] font-black italic uppercase tracking-widest px-4 py-1.5 rounded-xl">
+                                {{ getCategoryStatus(cat).isPass ? 'PASSED' : 'INCOMPLETE' }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Footer Info -->
+                <div class="mt-auto pt-8 border-t border-slate-100 flex justify-between items-end flex-shrink-0 pb-2">
+                    <div class="space-y-1">
+                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">GradeFlow CS Graduation Simulator</p>
+                        <p class="text-[9px] font-bold text-slate-300 uppercase italic tracking-widest">Printed on: {{ new Date().toLocaleDateString('th-TH') }} {{ new Date().toLocaleTimeString('th-TH') }}</p>
+                    </div>
+                    <div :class="isGraduating ? 'text-green-600' : 'text-red-600'" class="text-right">
+                        <p class="text-[10px] font-black uppercase tracking-widest leading-none mb-1 text-slate-400">Final Verification</p>
+                        <p class="text-lg font-black italic uppercase tracking-tighter underline underline-offset-8 decoration-2">{{ isGraduating ? 'ELIGIBLE FOR GRADUATION' : 'GRADUATION PENDING' }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main UI Header -->
+        <nav class="bg-white border-b border-slate-200 py-5 px-8 mb-10 sticky top-0 z-50 shadow-sm no-print">
+            <div class="max-w-7xl mx-auto flex justify-between items-center">
+                <div class="flex items-center gap-4">
+                    <div class="bg-blue-600 p-2.5 rounded-2xl shadow-lg shadow-blue-200">
+                        <i class="fas fa-graduation-cap text-white text-2xl"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-2xl font-bold text-slate-800">GradeFlow <span class="text-blue-600">CS</span></h1>
+                    </div>
+                </div>
+                <div class="flex items-center gap-4">
+                    <button @click="downloadPDF" class="bg-slate-800 text-white px-6 py-3 rounded-2xl font-bold text-sm flex items-center gap-2 hover:bg-slate-700 transition-all shadow-lg shadow-slate-200">
+                        <i class="fas fa-file-pdf"></i> ดาวน์โหลด PDF
+                    </button>
+                </div>
+            </div>
+        </nav>
+
+        <main class="max-w-7xl mx-auto px-4 sm:px-6 no-print">
+            
+            <!-- Dashboard KPIs -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
+                <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 flex flex-col items-center justify-center text-center transition-all hover:shadow-md">
+                    <div :class="isGraduating ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'" class="w-16 h-16 rounded-full flex items-center justify-center mb-4 shadow-inner">
+                        <i :class="isGraduating ? 'fa-check-circle' : 'fa-clock'" class="fas text-3xl"></i>
+                    </div>
+                    <p class="text-xs font-black text-slate-400 uppercase mb-2 tracking-widest">สถานะปัจจุบัน</p>
+                    <p :class="isGraduating ? 'text-green-600' : 'text-red-600'" class="text-xl font-bold leading-tight uppercase italic">
+                        {{ isGraduating ? 'พร้อมจบ' : 'กำลังดำเนินการ' }}
+                    </p>
+                </div>
+
+                <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 transition-all hover:shadow-md">
+                    <p class="text-xs font-black text-slate-500 uppercase mb-3 tracking-widest">หน่วยกิตสะสมรวม</p>
+                    <div class="flex items-end gap-2 mb-3">
+                        <span class="kpi-value text-slate-900">{{ totalCreditsPassed }}</span>
+                        <span class="text-slate-500 font-bold text-xl pb-2">/ {{ minCredits }}</span>
+                    </div>
+                    <div class="w-full bg-slate-100 h-3 rounded-full overflow-hidden shadow-inner">
+                        <div class="bg-blue-500 h-full transition-all duration-1000 ease-out shadow-sm" :style="{ width: Math.min((totalCreditsPassed / minCredits) * 100, 100) + '%' }"></div>
+                    </div>
+                </div>
+
+                <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 transition-all hover:shadow-md">
+                    <p class="text-xs font-black text-slate-500 uppercase mb-3 tracking-widest">GPAX สะสม</p>
+                    <div class="flex items-end gap-2 mb-3">
+                        <span class="kpi-value text-slate-900 font-bold">{{ gpax.toFixed(2) }}</span>
+                        <span class="text-slate-500 font-bold text-xl pb-2 text-sm">Min 2.00</span>
+                    </div>
+                    <p :class="gpax >= 2.0 ? 'text-green-600' : 'text-red-500'" class="text-sm font-bold uppercase italic flex items-center gap-1.5">
+                        <i :class="gpax >= 2.0 ? 'fa-check-circle' : 'fa-times-circle'" class="fas"></i>
+                        {{ gpax >= 2.0 ? 'Pass' : 'Low GPA' }}
+                    </p>
+                </div>
+
+                <div class="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-100 transition-all hover:shadow-md">
+                    <p class="text-xs font-black text-slate-400 uppercase mb-5 tracking-widest">การทดสอบภาษาอังกฤษ</p>
+                    <div class="flex items-center gap-5">
+                        <button @click="englishPassed = !englishPassed" :class="englishPassed ? 'bg-green-500' : 'bg-slate-300'" class="relative inline-flex h-8 w-14 items-center rounded-full transition-all shadow-lg focus:outline-none">
+                            <span :class="englishPassed ? 'translate-x-7' : 'translate-x-1'" class="inline-block h-6 w-6 transform rounded-full bg-white transition-transform shadow-sm" />
+                        </button>
+                        <span :class="englishPassed ? 'text-green-600' : 'text-slate-500'" class="font-black uppercase tracking-widest text-2xl">
+                            {{ englishPassed ? 'Passed' : 'Pending' }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col lg:flex-row gap-10">
+                <!-- Main Content: Category List -->
+                <div class="lg:w-2/3 space-y-6">
+                    <div v-for="(cat, catIndex) in categories" :key="catIndex" class="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden transition-all hover:border-blue-100">
+                        <div @click="cat.isOpen = !cat.isOpen" class="p-8 flex justify-between items-center cursor-pointer hover:bg-slate-50 transition-colors">
+                            <div class="flex items-center gap-6">
+                                <div :class="getCategoryStatus(cat).isPass ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'" class="w-14 h-14 rounded-[1.25rem] flex items-center justify-center shadow-inner">
+                                    <i :class="cat.icon" class="text-2xl"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-xl font-bold text-slate-800">{{ cat.name }}</h3>
+                                    <p class="text-sm text-slate-500 font-bold uppercase tracking-widest flex flex-wrap gap-4 mt-1">
+                                        <span>สำเร็จ <span class="text-blue-600">{{ getCategoryStatus(cat).credits }}</span> / {{ cat.minCredits }} หน่วยกิต</span>
+                                        <span v-if="cat.calculateGpa" class="text-blue-500 font-bold">• GPA: {{ calculateCategoryGpa(cat).toFixed(2) }}</span>
+                                    </p>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-5">
+                                <span v-if="getCategoryStatus(cat).isPass" class="text-green-500 font-black text-[10px] uppercase tracking-[0.2em] hidden md:inline border-2 border-green-100 px-3 py-1 rounded-full text-center">COMPLETED</span>
+                                <i :class="cat.isOpen ? 'fa-chevron-up' : 'fa-chevron-down'" class="fas text-slate-300 text-xl"></i>
+                            </div>
+                        </div>
+
+                        <div v-show="cat.isOpen" class="border-t border-slate-50 animate-fadeIn overflow-x-auto">
+                            <table class="w-full text-left">
+                                <thead class="bg-slate-50/50 text-[10px] text-slate-400 font-black uppercase tracking-[0.1em]">
+                                    <tr>
+                                        <th class="px-8 py-5">Course ID</th>
+                                        <th class="px-8 py-5 text-base">Course Name</th>
+                                        <th class="px-8 py-5 w-24 text-center">Credit</th>
+                                        <th class="px-8 py-5 w-32">Grade</th>
+                                        <th class="px-8 py-5 w-16"></th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-50">
+                                    <tr v-for="(sub, subIndex) in cat.subjects" :key="subIndex" class="group hover:bg-blue-50/30 transition-colors">
+                                        <td class="px-8 py-4 text-sm font-mono text-slate-500 font-bold">{{ sub.code }}</td>
+                                        <td class="px-8 py-4 text-base font-bold text-slate-700 leading-snug">
+                                            <div>{{ sub.name }}</div>
+                                            <div v-if="sub.nameTh" class="text-xs text-slate-400 font-medium mt-0.5">{{ sub.nameTh }}</div>
+                                        </td>
+                                        <td class="px-8 py-4 text-center">
+                                            <input v-model.number="sub.credits" type="number" class="w-16 text-center bg-white border-2 border-slate-300 rounded-xl font-bold py-2.5 text-base text-slate-900 transition-all focus:ring-4 focus:ring-blue-100 shadow-sm">
+                                        </td>
+                                        <td class="px-8 py-4">
+                                            <select v-model="sub.grade" :class="getGradeClass(sub.grade)" class="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-black focus:ring-4 focus:ring-blue-100 transition-all w-full shadow-sm">
+                                                <option value="">(ยังไม่ได้เรียน)</option>
+                                                <template v-if="sub.gradingType === 'SU'">
+                                                    <option value="S">S</option>
+                                                    <option value="U">U</option>
+                                                </template>
+                                                <template v-else>
+                                                    <option v-for="g in availableGrades" :key="g" :value="g">{{ g }}</option>
+                                                </template>
+                                            </select>
+                                        </td>
+                                        <td class="px-8 py-4 text-right">
+                                            <button @click="removeSubject(catIndex, subIndex)" class="text-slate-200 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 text-lg"><i class="fas fa-trash-alt"></i></button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="p-6 bg-slate-50/30 text-center">
+                                <button @click="addSubject(catIndex)" class="group text-sm font-black text-blue-600 uppercase tracking-widest hover:text-blue-800 transition-all flex items-center justify-center mx-auto gap-3">
+                                    <i class="fas fa-plus-circle text-xl transition-transform group-hover:rotate-90"></i> เพิ่มรายวิชา
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sidebar Summary -->
+                <div class="lg:w-1/3">
+                    <div class="sticky-sidebar bg-white rounded-[3.5rem] shadow-2xl shadow-slate-200/50 border border-slate-100 p-10">
+                        <h3 class="font-black text-slate-800 mb-10 flex items-center gap-4 uppercase text-2xl tracking-tighter text-slate-900">
+                            <i class="fas fa-chart-line text-blue-600"></i> Summary Check
+                        </h3>
+                        
+                        <div class="space-y-6 mb-12">
+                            <div v-for="(cat, idx) in categories" :key="idx" class="flex flex-col gap-2 p-3 rounded-2xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-100">
+                                <div class="flex justify-between items-start text-[10px] font-black uppercase tracking-wider">
+                                    <div class="flex flex-col gap-1">
+                                        <span class="text-slate-600 truncate w-40 font-bold">{{ cat.name }}</span>
+                                        <span v-if="cat.calculateGpa" class="text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded-full inline-block w-fit">
+                                            GPA: {{ calculateCategoryGpa(cat).toFixed(2) }}
+                                        </span>
+                                    </div>
+                                    <span :class="getCategoryStatus(cat).isPass ? 'text-green-500' : 'text-red-500'" class="pt-0.5 font-black">
+                                        {{ getCategoryStatus(cat).isPass ? 'PASS' : 'FAIL' }}
+                                    </span>
+                                </div>
+                                <div class="w-full bg-slate-100 h-2 rounded-full overflow-hidden shadow-inner mt-1">
+                                    <div :class="getCategoryStatus(cat).isPass ? 'bg-green-500 shadow-green-100' : 'bg-red-500 shadow-red-100'" class="h-full transition-all duration-700 shadow-sm" :style="{ width: Math.min((getCategoryStatus(cat).credits / cat.minCredits) * 100, 100) + '%' }"></div>
+                                </div>
+                                <div class="flex justify-between text-[11px] font-bold text-slate-600 px-1">
+                                    <span>{{ getCategoryStatus(cat).credits }} CR</span>
+                                    <span class="text-slate-400">Target {{ cat.minCredits }}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-slate-900 rounded-[3rem] p-10 text-white shadow-xl shadow-slate-300">
+                            <p class="text-xs font-black text-slate-500 uppercase tracking-widest mb-3">Simulated GPAX Result</p>
+                            <p class="sidebar-gpax mb-0 text-white">{{ gpax.toFixed(2) }}</p>
+                        </div>
+                        
+                        <div class="mt-8">
+                            <button @click="resetToOriginal" class="w-full py-4 text-slate-300 hover:text-slate-500 text-[11px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-3">
+                                <i class="fas fa-undo-alt"></i> Reset All Data
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, watch, nextTick } = Vue;
+
+        createApp({
+            setup() {
+                const minCredits = 126;
+                const englishPassed = ref(false);
+                const showPdfModal = ref(false);
+                const studentInfo = ref({ id: '', name: '' });
+
+                watch(() => studentInfo.value.id, (newVal) => {
+                    studentInfo.value.id = newVal.replace(/\D/g, '').slice(0, 8);
+                });
+
+                const availableGrades = ['A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'F', 'I', 'W'];
+                const gradePoints = { 'A': 4, 'B+': 3.5, 'B': 3, 'C+': 2.5, 'C': 2, 'D+': 1.5, 'D': 1, 'F': 0, 'S': null, 'U': null, 'I': null, 'W': null, '': null };
+
+                const mockData = [
+                    {
+                        name: '1. หมวดศึกษาทั่วไป (GenEd)', icon: 'fas fa-book-open', minCredits: 30, isOpen: false, calculateGpa: true,
+                        subjects: [
+                            { code: '001101', name: 'Thai Language in Daily Life', nameTh: 'ภาษาไทยในชีวิตประจำวัน', credits: 2, grade: '' },
+                            { code: '001102', name: 'Thai for Academic Purposes', nameTh: 'ภาษาไทยเชิงวิชาการ', credits: 1, grade: '' },
+                            { code: '001103', name: 'English for Daily Life', nameTh: 'ภาษาอังกฤษสำหรับชีวิตประจำวัน', credits: 3, grade: '' },
+                            { code: '001104', name: 'English for Communication', nameTh: 'ภาษาอังกฤษเพื่อการสื่อสาร', credits: 3, grade: '' },
+                            { code: '001205', name: 'English for Academic and Professional Communication', nameTh: 'ภาษาอังกฤษเพื่อการสื่อสารเชิงวิชาการและวิชาชีพ', credits: 3, grade: '' },
+                            { code: '002101', name: 'Technology Usage for Digital life', nameTh: 'การใช้เทคโนโลยีเพื่อชีวิตยุคดิจิทัล', credits: 1, grade: '' },
+                            { code: '002102', name: 'Digital Intelligence Quotient', nameTh: 'ความฉลาดทางดิจิทัล', credits: 2, grade: '' },
+                            { code: '003101', name: 'Artistic for Life Management', nameTh: 'สุนทรียศาสตร์ในการจัดการชีวิต', credits: 3, grade: '' },
+                            { code: '003102', name: 'Skills Development and Lifelong Learning', nameTh: 'การพัฒนาทักษะและการเรียนรู้ตลอดชีวิต', credits: 3, grade: '' },
+                            { code: '003305', name: 'Design Thinking Process for Digital Age Entrepreneurs', nameTh: 'กระบวนการคิดเชิงออกแบบสู่การเป็นผู้ประกอบการยุคดิจิทัล', credits: 3, grade: '' },
+                            { code: '003203', name: 'Collaborative Learning for Society Creation', nameTh: 'เรียนรู้ร่วมกันสรรค์สร้างสังคม', credits: 2, grade: '' },
+                            { code: '003204', name: 'Health Environment and Community Management', nameTh: 'การจัดการสุขภาพ สิ่งแวดล้อม และชุมชน', credits: 1, grade: '' },
+                            { code: '003306', name: 'Integration for Professional Innovation', nameTh: 'บูรณาการความรู้สู่นวัตกรรมทางวิชาชีพ', credits: 3, grade: '', gradingType: 'SU' }
+                        ]
+                    },
+                    {
+                        name: '2.1 วิชาแกน (Core Courses)', icon: 'fas fa-atom', minCredits: 15, isOpen: true, calculateGpa: true,
+                        subjects: [
+                            { code: '241111', name: 'Mathematics l', nameTh: 'คณิตศาสตร์ 1', credits: 3, grade: '' },
+                            { code: '241326', name: 'Discrete Mathematics', nameTh: 'คณิตศาสตร์เต็มหน่วย', credits: 3, grade: '' },
+                            { code: '247105', name: 'Probability and Statistics', nameTh: 'ความน่าจะเป็นและสถิติ', credits: 3, grade: '' },
+                            { code: '225201', name: 'Numerical Programming', nameTh: 'การโปรแกรมเชิงตัวเลข', credits: 3, grade: '' },
+                            { code: '146200', name: 'English for Specific Purposes', nameTh: 'ภาษาอังกฤษเพื่อวัตถุประสงค์เฉพาะ', credits: 3, grade: '' }
+                        ]
+                    },
+                    {
+                        name: '2.2 วิชาเฉพาะด้าน (Specific Area)', icon: 'fas fa-laptop-code', minCredits: 60, isOpen: true, calculateGpa: true,
+                        subjects: [
+                            { code: '225251', name: 'System Software Analysis and Design', nameTh: 'การวิเคราะห์และออกแบบซอฟต์แวร์ระบบ', credits: 3, grade: '' },
+                            { code: '225351', name: 'Cryptography and Information Security', nameTh: 'วิทยาการรหัสลับและการรักษาความปลอดภัยทางสารสนเทศ', credits: 3, grade: '' },
+                            { code: '225241', name: 'Database Management System and Database Design', nameTh: 'ระบบจัดการฐานข้อมูลและออกแบบฐานข้อมูล', credits: 3, grade: '' },
+                            { code: '225242', name: 'User Interface Design and Implementation', nameTh: 'การออกแบบและพัฒนาส่วนต่อประสาน', credits: 3, grade: '' },
+                            { code: '225100', name: 'Introduction to Computer Science', nameTh: 'วิทยาการคอมพิวเตอร์เบื้องต้น', credits: 3, grade: '' },
+                            { code: '225111', name: 'Introduction to Programming', nameTh: 'การเขียนโปรแกรมเบื้องต้น', credits: 3, grade: '' },
+                            { code: '225211', name: 'Principles of Object-Oriented Programming', nameTh: 'หลักการเขียนโปรแกรมเชิงวัตถุ', credits: 3, grade: '' },
+                            { code: '225212', name: 'Web Application Development', nameTh: 'การพัฒนาเว็บแอปพลิเคชัน', credits: 3, grade: '' },
+                            { code: '225291', name: 'Preparation for Computer Science Project I', nameTh: 'การเตรียมพร้อมสำหรับโครงงานวิทยาการคอมพิวเตอร์ 1', credits: 1, grade: '' },
+                            { code: '225292', name: 'Preparation for Computer Science Project II', nameTh: 'การเตรียมพร้อมสำหรับโครงงานวิทยาการคอมพิวเตอร์ 2', credits: 1, grade: '' },
+                            { code: '225311', name: 'Software Engineering Concepts', nameTh: 'แนวคิดวิศวกรรมซอฟต์แวร์', credits: 3, grade: '' },
+                            { code: '225331', name: 'Data Science and Application', nameTh: 'วิทยาการข้อมูลและการประยุกต์', credits: 3, grade: '' },
+                            { code: '225392', name: 'Preparation for Computer Science Project III', nameTh: 'การเตรียมพร้อมสำหรับโครงงานวิทยาการคอมพิวเตอร์ 3', credits: 1, grade: '' },
+                            { code: '225101', name: 'Logical Thinking', nameTh: 'การคิดเชิงตรรกะ', credits: 3, grade: '' },
+                            { code: '225131', name: 'Principle of Computer Programming', nameTh: 'แนวคิดการเขียนโปรแกรมคอมพิวเตอร์', credits: 3, grade: '' },
+                            { code: '225231', name: 'Data Structures and Algorithm Analysis', nameTh: 'โครงสร้างข้อมูลและการวิเคราะห์ขั้นตอนวิธี', credits: 3, grade: '' },
+                            { code: '225271', name: 'Principles of Artificial Intelligence', nameTh: 'หลักการปัญญาประดิษฐ์', credits: 3, grade: '' },
+                            { code: '225312', name: 'Mobile Application Development', nameTh: 'การพัฒนาแอปพลิเคชันสำหรับอุปกรณ์เคลื่อนที่', credits: 3, grade: '' },
+                            { code: '225341', name: 'Computer Network for Software Development', nameTh: 'เครือข่ายคอมพิวเตอร์สำหรับการพัฒนาซอฟต์แวร์', credits: 3, grade: '' },
+                            { code: '225371', name: 'Machine Learning', nameTh: 'การเรียนรู้ของเครื่อง', credits: 3, grade: '' },
+                            { code: '225393', name: 'Computer Science Project', nameTh: 'โครงงานวิทยาการคอมพิวเตอร์', credits: 3, grade: '', gradingType: 'SU' },
+                            { code: '225261', name: 'Fundamental of Computer System', nameTh: 'พื้นฐานระบบคอมพิวเตอร์', credits: 3, grade: '' }
+                        ]
+                    },
+                    {
+                        name: '2.3 วิชาเลือก (Electives)', icon: 'fas fa-layer-group', minCredits: 9, isOpen: false, calculateGpa: true,
+                        subjects: [
+                            { code: '225372', name: 'Robot Programming', nameTh: 'การโปรแกรมหุ่นยนต์', credits: 3, grade: '' },
+                            { code: '225373', name: 'Image Processing and Understanding', nameTh: 'การประมวลผลและเข้าใจภาพ', credits: 3, grade: '' },
+                            { code: '225374', name: 'Information Retrieval', nameTh: 'การสืบค้นสารสนเทศ', credits: 3, grade: '' },
+                            { code: '225471', name: 'Applied Deep Learning', nameTh: 'การเรียนรู้เชิงลึกประยุกต์', credits: 3, grade: '' },
+                            { code: '225472', name: 'Game Development and Design', nameTh: 'การออกแบบและพัฒนาเกม', credits: 3, grade: '' },
+                            { code: '225473', name: 'Current topics in Artificial Intelligence', nameTh: 'หัวข้อปัจจุบันทางปัญญาประดิษฐ์', credits: 3, grade: '' },
+                            { code: '225381', name: 'Application Development with Cloud Platform', nameTh: 'การพัฒนาแอปพลิเคชันด้วยแพลตฟอร์มกลุ่มเมฆ', credits: 3, grade: '' },
+                            { code: '225382', name: 'Development and Operation Technology', nameTh: 'เทคโนโลยีการพัฒนาและการปฏิบัติการ', credits: 3, grade: '' },
+                            { code: '225481', name: 'Blockchain Technology', nameTh: 'เทคโนโลยีบล็อกเชน', credits: 3, grade: '' },
+                            { code: '225482', name: 'Decentralized Application Development', nameTh: 'การพัฒนาแอปพลิเคชันแบบกระจายศูนย์', credits: 3, grade: '' },
+                            { code: '225483', name: 'Current topics in Software Technology', nameTh: 'หัวข้อปัจจุบันทางเทคโนโลยีพัฒนาซอฟต์แวร์', credits: 3, grade: '' },
+                            { code: '227361', name: 'Software Testing', nameTh: 'การทดสอบซอฟต์แวร์', credits: 3, grade: '' }
+                        ]
+                    },
+                    {
+                        name: '3. ประสบการณ์ภาคสนาม', icon: 'fas fa-briefcase', minCredits: 6, isOpen: false, calculateGpa: true,
+                        subjects: [
+                            { code: '225492', name: 'Co-Operative Education', nameTh: 'สหกิจศึกษา', credits: 6, grade: '', gradingType: 'SU' },
+                            { code: '225493', name: 'Professional Training', nameTh: 'การฝึกงาน', credits: 6, grade: '', gradingType: 'SU' },
+                            { code: '225494', name: 'Independent Study', nameTh: 'การศึกษาอิสระ', credits: 6, grade: '', gradingType: 'SU' },
+                            { code: '225495', name: 'Work Integrated Learning 2', nameTh: 'การศึกษาเชิงบูรณาการกับการทำงาน 2', credits: 6, grade: '', gradingType: 'SU' }
+                        ]
+                    },
+                    {
+                        name: '4. บังคับไม่นับหน่วยกิต', icon: 'fas fa-check-double', minCredits: 1, isOpen: false, calculateGpa: false, excludeFromTotal: true,
+                        subjects: [
+                            { code: '225391', name: 'Preparation for Computer Science Professional Experience', nameTh: 'การเตรียมพร้อมฝึกประสบการณ์วิชาชีพวิทยาการคอมพิวเตอร์ (ไม่นับหน่วยกิต)', credits: 1, grade: '', gradingType: 'SU' }
+                        ]
+                    },
+                    {
+                        name: '5. หมวดวิชาเลือกเสรี', icon: 'fas fa-star', minCredits: 6, isOpen: false, calculateGpa: true,
+                        subjects: [
+                            { code: '999999', name: 'Free Elective Course 1', nameTh: 'วิชาเลือกเสรี 1', credits: 3, grade: '' },
+                            { code: '999998', name: 'Free Elective Course 2', nameTh: 'วิชาเลือกเสรี 2', credits: 3, grade: '' }
+                        ]
+                    }
+                ];
+
+                const categories = ref(JSON.parse(JSON.stringify(mockData)));
+
+                const totalCreditsPassed = computed(() => {
+                    let total = 0;
+                    categories.value.forEach(cat => {
+                        if (cat.excludeFromTotal) return;
+                        cat.subjects.forEach(sub => {
+                            if (sub.grade && !['F', 'U', 'I', 'W'].includes(sub.grade)) total += sub.credits;
+                        });
+                    });
+                    return total;
+                });
+
+                const gpax = computed(() => {
+                    let pts = 0, crd = 0;
+                    categories.value.forEach(cat => {
+                        cat.subjects.forEach(sub => {
+                            const p = gradePoints[sub.grade];
+                            if (p !== null && sub.grade !== '') { pts += (p * sub.credits); crd += sub.credits; }
+                        });
+                    });
+                    return crd > 0 ? pts / crd : 0;
+                });
+
+                const getCategoryStatus = (cat) => {
+                    let cr = 0;
+                    cat.subjects.forEach(s => { if (s.grade && !['F', 'U', 'I', 'W'].includes(s.grade)) cr += s.credits; });
+                    return { credits: cr, isPass: cr >= cat.minCredits };
+                };
+
+                const isGraduating = computed(() => {
+                    const allCategoriesPass = categories.value.every(cat => getCategoryStatus(cat).isPass);
+                    return totalCreditsPassed.value >= minCredits && gpax.value >= 2.0 && englishPassed.value && allCategoriesPass;
+                });
+
+                const addSubject = (i) => categories.value[i].subjects.push({ code: '', name: 'New Course', nameTh: 'วิชาใหม่', credits: 3, grade: '' });
+                const removeSubject = (i, j) => categories.value[i].subjects.splice(j, 1);
+
+                const calculateCategoryGpa = (cat) => {
+                    let pts = 0, crd = 0;
+                    cat.subjects.forEach(s => {
+                        const p = gradePoints[s.grade];
+                        if (p !== null && s.grade !== '') { pts += (p * s.credits); crd += s.credits; }
+                    });
+                    return crd > 0 ? pts / crd : 0;
+                };
+
+                const getGradeClass = (g) => {
+                    const base = "transition-all ";
+                    if (g === 'A') return base + 'text-green-600';
+                    if (g === 'F' || g === 'U') return base + 'text-red-500';
+                    if (g === 'I') return base + 'text-amber-500';
+                    if (g === 'S') return base + 'text-blue-500';
+                    if (g === '') return base + 'text-slate-300 italic font-normal';
+                    return base + 'text-slate-600';
+                };
+
+                const resetToOriginal = () => { if(confirm('รีเซ็ตข้อมูล?')) { categories.value = JSON.parse(JSON.stringify(mockData)); englishPassed.value = false; } };
+
+                const downloadPDF = () => {
+                    showPdfModal.value = true;
+                };
+
+                const generatePDF = () => {
+                    showPdfModal.value = false;
+                    
+                    setTimeout(() => {
+                        const element = document.getElementById('pdf-template');
+                        
+                        const opt = {
+                            margin: [0, 0, 0, 0],
+                            filename: `GradeFlow_Summary_${studentInfo.value.id || 'Student'}.pdf`,
+                            image: { type: 'jpeg', quality: 1 },
+                            html2canvas: { 
+                                scale: 2, 
+                                useCORS: true, 
+                                letterRendering: true,
+                                scrollY: 0,
+                                height: 1122 
+                            },
+                            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true }
+                        };
+                        
+                        html2pdf().set(opt).from(element).save();
+                    }, 500);
+                };
+
+                return {
+                    categories, minCredits, englishPassed, availableGrades,
+                    totalCreditsPassed, gpax, isGraduating,
+                    showPdfModal, studentInfo,
+                    addSubject, removeSubject, getCategoryStatus, calculateCategoryGpa, getGradeClass, resetToOriginal, downloadPDF, generatePDF
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
